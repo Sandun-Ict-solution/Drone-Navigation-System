@@ -1,0 +1,61 @@
+# ══════════════════════════════════════════════════════════════════════
+#  UAV Navigation & Control Center — Requirements
+#  Developed by Sandun Wijesinghe
+#  Python 3.8+ required
+# ══════════════════════════════════════════════════════════════════════
+
+# ── Core UI ───────────────────────────────────────────────────────────
+streamlit>=1.32.0
+streamlit-autorefresh>=1.0.1
+
+# ── Data processing ───────────────────────────────────────────────────
+pandas>=1.5.0
+numpy>=1.23.0
+
+# ── Computer vision & drone ───────────────────────────────────────────
+opencv-python>=4.8.0
+djitellopy>=2.5.0
+
+# ── AI / Object detection ─────────────────────────────────────────────
+ultralytics>=8.0.0          # YOLOv8 — optional, falls back to CV2 detection
+
+# ── Charts & visualisation ────────────────────────────────────────────
+plotly>=5.18.0               # optional — analytics tab charts
+
+# ── Database drivers ──────────────────────────────────────────────────
+pymongo>=4.6.0               # optional — MongoDB storage
+mysql-connector-python>=8.3.0  # optional — MySQL storage
+
+# ── Report generation ─────────────────────────────────────────────────
+reportlab>=4.1.0             # optional — PDF export
+
+# ── Install all at once ───────────────────────────────────────────────
+#  pip install -r requirements.txt
+#
+# ── Drone WiFi setup ──────────────────────────────────────────────────
+#  1. Power on Tello (LED blinks yellow)
+#  2. Connect PC to TELLO-XXXXXX WiFi network
+#  3. Default drone IP: 192.168.10.1
+#
+# ── Optional: MongoDB ─────────────────────────────────────────────────
+#  mongod --dbpath /data/db
+#
+# ── Optional: MySQL ───────────────────────────────────────────────────
+#  mysql -u root -e "CREATE DATABASE crack_db;"
+#  mysql -u root crack_db -e "
+#    CREATE TABLE cracks (
+#      id INT AUTO_INCREMENT PRIMARY KEY,
+#      timestamp VARCHAR(30),
+#      type VARCHAR(50),
+#      severity VARCHAR(20),
+#      confidence FLOAT,
+#      altitude_cm INT,
+#      image_path VARCHAR(200)
+#    );"
+#
+# ── YOLO model ────────────────────────────────────────────────────────
+#  Place your trained best.pt at: runs/detect/train5/weights/best.pt
+#  Falls back to yolov8n.pt (downloaded automatically on first run)
+#
+# ── Run ───────────────────────────────────────────────────────────────
+#  streamlit run app.py
