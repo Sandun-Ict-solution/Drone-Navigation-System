@@ -76,7 +76,7 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(     
     page_title="UAV Navigation & Control Center",
-    page_icon="𖥂🎮🕹️",
+    page_icon="🚁",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -204,12 +204,42 @@ def get_live_frame_b64() -> str:
 def live_camera_component(height: int = 440):
     """
     Render the live camera feed.
-    Strategy: use a Streamlit image placeholder fed by the MJPEG frame buffer.
-    This avoids browser localhost-fetch restrictions entirely (mixed-content /
-    cross-origin blocks that silently kill the iframe fetch after 5 retries).
-    The autorefresh loop (150 ms) drives re-renders; we just decode the latest
-    JPEG from _MJPEG_FRAME and push it through st.image().
+    Supports: Tello MJPEG buffer, external RTSP/HTTP URLs, and offline placeholder.
+    Auto-refreshes every second via the global refresh loop.
     """
+    # Check if a custom stream URL is set
+    stream_url = st.session_state.get("custom_stream_url", "")
+
+    # If external URL is configured, embed it as an HTML img/video tag
+    if stream_url and stream_url.startswith(("http://", "https://", "rtsp://")):
+        if "rtsp://" in stream_url:
+            # RTSP can't be embedded directly — show info
+            st.warning("⚠️ RTSP streams require a transcoding proxy. Use an HTTP MJPEG or HLS URL instead.")
+        else:
+            # HTTP MJPEG stream — embed as <img> tag for continuous feed
+            html = f"""
+<!DOCTYPE html><html><body style="margin:0;padding:0;background:#030710;overflow:hidden">
+<div style="position:relative;width:100%;height:{height}px">
+  <img src="{stream_url}"
+       style="width:100%;height:{height}px;object-fit:cover;border-radius:6px"
+       onerror="this.style.display='none';document.getElementById('err').style.display='flex'"/>
+  <div id="err" style="display:none;position:absolute;top:0;left:0;width:100%;height:100%;
+       align-items:center;justify-content:center;flex-direction:column;background:#030710;
+       font-family:'Share Tech Mono',monospace;font-size:0.75rem;color:#ff4757;text-align:center">
+    <div style="font-size:1.5rem;margin-bottom:8px">⚠️</div>
+    <div>STREAM UNAVAILABLE</div>
+    <div style="font-size:0.6rem;color:#4a8fa8;margin-top:4px">{stream_url}</div>
+  </div>
+  <div style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,0.6);
+       border-radius:3px;padding:2px 8px;font-family:'Share Tech Mono',monospace;
+       font-size:0.55rem;color:#00ff88">● LIVE</div>
+</div>
+<style>body{{background:#030710}}</style>
+</body></html>
+"""
+            _stc.html(html, height=height + 4, scrolling=False)
+        return
+
     with _MJPEG_LOCK:
         frame = bytes(_MJPEG_FRAME)
 
@@ -224,8 +254,6 @@ def live_camera_component(height: int = 440):
         # Fallback: show raw JPEG bytes directly
         st.image(frame, use_container_width=True)
     else:
-        # No frame yet — show an animated offline placeholder via HTML
-        b64 = ""
         html = f"""
 <!DOCTYPE html><html><body style="margin:0;padding:0;background:#030710;overflow:hidden">
 <div style="display:flex;align-items:center;justify-content:center;
@@ -234,7 +262,7 @@ def live_camera_component(height: int = 440):
        color:#1a4a5a;letter-spacing:2px;text-align:center">
     📷 CAMERA OFFLINE<br>
     <span style="font-size:0.6rem;color:#0d3a50">
-      Enable Simulation Mode → Start Camera
+      Connect drone &amp; press ▶️ Start Camera
     </span>
   </div>
 </div>
@@ -330,7 +358,7 @@ def generate_pdf_report(db_type, project, inspector, total, crit, mod,
     c.rect(0, H-80, W, 80, fill=1, stroke=0)
     c.setFillColorRGB(0, 0.83, 1)
     c.setFont("Helvetica-Bold", 20)
-    c.drawString(40, H-45, "🚁 UAV Navigation & Control Center")
+    c.drawString(40, H-45, "UAV Navigation & Control Center — Aerial Defect Report")
     c.setFont("Helvetica", 10)
     c.setFillColorRGB(0.29, 0.56, 0.66)
     c.drawString(40, H-65, f"Project: {project}  |  Inspector: {inspector}  |  Database: {db_type}")
@@ -688,6 +716,10 @@ _SS_DEFAULTS: dict = {
     "sim_height":           0,
     "sim_yaw":              0,
     "sim_tof":              350,
+    # External stream URL (for fixed drone cameras or online feeds)
+    "custom_stream_url":    "",
+    # Geofence toggle
+    "geofence_active":      False,
 }
 
 for _k, _v in _SS_DEFAULTS.items():
@@ -982,7 +1014,7 @@ def _build_ana_system() -> str:
         wx_str = (f"Weather: {weather['temp']}°C, {weather['desc']}, "
                   f"wind {weather['wind_kmh']} km/h "
                   f"({'Safe to fly' if weather['fly_ok'] else 'Caution'}).")
-    return f"""You are ANA (Autonomous Navigation Assistant), AI co-pilot for UAV Defect System.
+    return f"""You are ANA (Autonomous Navigation Assistant), AI co-pilot for UAV Navigation & Control Center.
 
 ## Current State
 - Drone: {'Connected & ' + ('FLYING' if flying else 'GROUNDED') if conn else 'OFFLINE'}
@@ -1233,6 +1265,7 @@ def _ensure_mjpeg_server():
     if not _MJPEG_STARTED:
         threading.Thread(target=_mjpeg_server, daemon=True).start()
         _MJPEG_STARTED = True
+        print(f"MJPEG server started on port {_MJPEG_PORT}")
         time.sleep(0.2)
 
 
@@ -1326,6 +1359,8 @@ def _camera_and_detection_thread():
                         "defects": [{"type":d["type"],"severity":d["severity"],"conf":d["conf"]} for d in defects],
                         "tel": tel_snap, "frame_idx": fidx,
                     }
+                if fidx % 100 == 0:
+                    print(f"Frame {fidx}: MJPEG updated, size {len(jpeg_bytes)}")
                 if rec:
                     vf = st.session_state.get("video_frames", [])
                     vf.append(jpeg_bytes)
@@ -1954,15 +1989,18 @@ def ai_path_minimap_svg(waypoints, current_wp, rows, cols):
 # ══════════════════════════════════════════════════════════════════════════════
 drain_alert_queue()
 
-if st.session_state.get("cam_active"):
+# ── Global 1-second auto-refresh (always active, works without any extra package) ──
+# Track last rerun time in session state and trigger st.rerun() after 1 second.
+# This is the most reliable method — pure Streamlit, no JS, no extra packages.
+_now = time.time()
+_last_rerun = st.session_state.get("_last_rerun_ts", 0)
+if _now - _last_rerun >= 0.5:
+    st.session_state["_last_rerun_ts"] = _now
+    # Also try streamlit-autorefresh as a supplement if available
     if AUTOREFRESH_AVAILABLE:
-        _st_autorefresh(interval=120, key="cam_refresh")
-    else:
-        # Fallback: inject a meta-refresh so the page still updates
-        _stc.html(
-            '<script>setTimeout(function(){window.parent.location.reload();},150);</script>',
-            height=0
-        )
+        _st_autorefresh(interval=500, key="global_refresh")
+    time.sleep(0.05)  # brief yield so Streamlit processes the rerun cleanly
+    st.rerun()
 
 # ── Header ────────────────────────────────────────────────────────────────────
 tel    = st.session_state["tel"]
@@ -1979,16 +2017,13 @@ st.markdown(f"""
 <div class="hud-header">
   <div style="display:flex;justify-content:space-between;align-items:center">
     <div>
-      <div class="hud-title">🚁 TELLO INSPECTOR PRO
+      <div class="hud-title">🚁 UAV NAVIGATION & CONTROL CENTER
         <span style="font-size:1rem;color:#00ff88">v4</span>
       </div>
-      <div class="hud-subtitle">Custom YOLOv8 · CV2 Detection · MongoDB/MySQL · AI Path · ANA Assistant{"  ·  🖥️ SIMULATION MODE" if st.session_state.get("sim_mode") else ""}</div>
+      <div class="hud-subtitle">Custom YOLOv8 · CV2 Detection · MongoDB/MySQL · AI Autopilot · ANA Assistant{"  ·  🖥️ SIMULATION MODE" if st.session_state.get("sim_mode") else ""}</div>
     </div>
     <div style="text-align:right">
       <div class="hud-version">SYS: {datetime.datetime.now().strftime('%H:%M:%S')}</div>
-      <div class="hud-version" style="color:{'#00ff88' if model_loaded else '#ffa502'}">
-        MODEL: {'✅ ' + os.path.basename(st.session_state.get('yolo_model_path','')) if model_loaded else '⚠️ yolov8n fallback'}
-      </div>
       <div class="hud-version" style="color:{'#00ff88' if safety=='SAFE' else '#ffa502' if safety=='CAUTION' else '#ff4757'}">
         SAFETY: {safety}
       </div>
@@ -2051,10 +2086,6 @@ with tab_ctrl:
 """, unsafe_allow_html=True)
             if st.button("🔗  CONNECT TO TELLO", key="btn_connect", use_container_width=True, type="primary"):
                 if _do_connect(): st.rerun()
-            st.markdown("<div style='text-align:center;color:#3a6a7a;font-size:0.7rem;padding:4px'>— or —</div>", unsafe_allow_html=True)
-            if st.button("🖥️  SIMULATE (No Drone)", key="btn_sim", use_container_width=True):
-                if _do_connect(sim=True): st.rerun()
-            st.caption("Simulation uses your PC webcam (or synthetic video) with full detection, AI path planning, and telemetry.")
         else:
             sim_badge = ' <span style="background:#0d2a4e;border:1px solid #ffa502;border-radius:3px;padding:1px 6px;font-size:0.65rem;color:#ffa502;font-family:monospace">SIM</span>' if st.session_state.get("sim_mode") else ""
             st.success(f"🟢 {'[SIM] ' if st.session_state.get('sim_mode') else ''}Online — {bat:.0f}% bat | ETA: {battery_eta()}")
@@ -2083,39 +2114,15 @@ with tab_ctrl:
         st.markdown('<div class="sec-hdr">📷 CAMERA</div>', unsafe_allow_html=True)
         if not st.session_state["cam_active"]:
             if not conn:
-                st.caption("⚠️ Connect Tello or click **Simulate** above to enable camera.")
-            cam_btn_label = "▶️ START CAMERA" if conn else "▶️ START SIM CAMERA"
+                st.caption("⚠️ Connect Tello to enable camera.")
+            cam_btn_label = "▶️ START CAMERA"
             if st.button(cam_btn_label, key="btn_cam_on", use_container_width=True,
                          type="primary", disabled=not conn):
                 start_camera(); st.rerun()
         else:
             if st.button("⏹️ STOP CAMERA", key="btn_cam_off", use_container_width=True):
                 stop_camera(); st.rerun()
-
-        cam_c1, cam_c2 = st.columns(2)
-        with cam_c1:
-            if st.button("📸 Screenshot", key="btn_snap", use_container_width=True,
-                         disabled=not st.session_state["cam_active"]):
-                capture_screenshot(); st.rerun()
-        with cam_c2:
-            lbl = "⏸️ Pause Det" if st.session_state["det_enabled"] else "▶️ Resume Det"
-            if st.button(lbl, key="btn_det_toggle", use_container_width=True,
-                         disabled=not st.session_state["cam_active"]):
-                st.session_state["det_enabled"] = not st.session_state["det_enabled"]; st.rerun()
-
-        if not st.session_state.get("recording"):
-            if st.button("🔴 Start Recording", key="btn_rec", use_container_width=True,
-                         disabled=not st.session_state["cam_active"]):
-                start_recording(); st.rerun()
-        else:
-            st.markdown('<span class="rec-dot"></span>**RECORDING…**', unsafe_allow_html=True)
-            if st.button("⏹️ Stop Recording", key="btn_rec_stop", use_container_width=True):
-                stop_recording(); st.rerun()
-        vf = st.session_state.get("video_frames", [])
-        if vf:
-            st.download_button("⬇️ Download Recording", data=build_mjpeg_download(),
-                               file_name=f"tello_{datetime.datetime.now().strftime('%H%M%S')}.mjpeg",
-                               mime="multipart/x-mixed-replace", key="dl_vid", use_container_width=True)
+            st.caption(f"🟢 Live · FPS {st.session_state.get('last_fps',0):.1f} · Frame #{st.session_state['frame_idx']}")
 
     with ctrl_mid:
         st.markdown('<div class="sec-hdr">🕹️ FLIGHT CONTROLS</div>', unsafe_allow_html=True)
@@ -2255,6 +2262,21 @@ with tab_cam:
         st.session_state["zoom_level"] = zoom_v
         filt_v = st.selectbox("Filter", CAM_FILTERS, index=CAM_FILTERS.index(st.session_state["cam_filter"]), key="filt_sl2")
         st.session_state["cam_filter"] = filt_v
+        st.markdown('<div class="sec-hdr">🔗 LIVE STREAM URL</div>', unsafe_allow_html=True)
+        stream_url_input = st.text_input(
+            "External camera URL (HTTP MJPEG / RTSP)",
+            value=st.session_state.get("custom_stream_url", ""),
+            placeholder="http://192.168.x.x:8080/video",
+            key="stream_url_cam",
+            help="Enter a live HTTP MJPEG URL from your drone camera or IP camera. Leave blank to use Tello feed."
+        )
+        if stream_url_input != st.session_state.get("custom_stream_url", ""):
+            st.session_state["custom_stream_url"] = stream_url_input
+            push_alert(f"📡 Stream URL updated", "info")
+        if st.session_state.get("custom_stream_url"):
+            if st.button("❌ Clear URL", key="btn_clear_url", use_container_width=True):
+                st.session_state["custom_stream_url"] = ""; st.rerun()
+
         st.markdown('<div class="sec-hdr">🔍 DETECTION</div>', unsafe_allow_html=True)
         det_on = st.toggle("CV2 Detection", value=st.session_state["det_enabled"], key="det_tog")
         st.session_state["det_enabled"] = det_on
@@ -2300,8 +2322,19 @@ with tab_cam:
 with tab_auto:
     auto_l, auto_r = st.columns([2, 1], gap="medium")
     with auto_l:
-        st.markdown('<div class="sec-hdr">🤖 AI PATH PLANNING</div>', unsafe_allow_html=True)
-        st.markdown("**Select Path Mode:**")
+        st.markdown('<div class="sec-hdr">🤖 AI AUTOPILOT — PATH PLANNING</div>', unsafe_allow_html=True)
+
+        # ── Pre-flight check banner ───────────────────────────────────────────
+        if not conn:
+            st.error("⛔ No drone connected. Connect a Tello drone to enable autopilot.")
+        elif not flying:
+            st.warning("⚠️ Drone is grounded. Take off from the CONTROL tab first, then launch a mission.")
+        elif mission:
+            st.info(f"🔄 Mission active: **{phase.upper()}** — Waypoint {cur_wp}/{len(wps)}")
+        else:
+            st.success("✅ Drone is airborne and ready. Configure and launch a mission below.")
+
+        st.markdown("**Select Flight Path Mode:**")
         mode_cols = st.columns(len(AI_PATH_MODES))
         for i, mode in enumerate(AI_PATH_MODES):
             with mode_cols[i]:
@@ -2313,15 +2346,16 @@ with tab_auto:
 
         selected_mode = st.session_state["ai_path_mode"]
         mode_info = {
-            "Grid Scan":        "🔲 Serpentine boustrophedon sweep — maximum coverage.",
-            "Perimeter Loop":   "🔁 Safe perimeter loop around the building facade.",
-            "Spiral Inward":    "🌀 Converging spiral from outside in.",
-            "Zigzag":           "⚡ Aggressive zigzag for fastest area coverage.",
-            "Return to Home":   "🏠 Immediately descends and lands.",
-            "Custom Waypoints": "📍 Use manually saved custom waypoints.",
+            "Grid Scan":        "🔲 Serpentine boustrophedon sweep — maximum coverage for full facade inspection.",
+            "Perimeter Loop":   "🔁 Safe perimeter loop around the building facade — ideal for quick exterior check.",
+            "Spiral Inward":    "🌀 Converging spiral from outside in — good for focused area inspection.",
+            "Zigzag":           "⚡ Aggressive zigzag pattern — fastest area coverage per flight.",
+            "Return to Home":   "🏠 Immediately returns to launch point and lands safely.",
+            "Custom Waypoints": "📍 Execute manually saved custom waypoints in sequence.",
         }
         st.info(f"**{selected_mode}:** {mode_info.get(selected_mode,'')}")
 
+        st.markdown("**Mission Parameters:**")
         p1, p2, p3 = st.columns(3)
         with p1: st.session_state["survey_rows"] = st.number_input("Rows", 1, 10, st.session_state["survey_rows"], key="rows_ai")
         with p2: st.session_state["survey_cols"] = st.number_input("Columns", 1, 10, st.session_state["survey_cols"], key="cols_ai")
@@ -2330,51 +2364,115 @@ with tab_auto:
         with p4: st.session_state["survey_speed"] = st.slider("Speed (cm/s)", 10, 100, st.session_state["survey_speed"], key="spd_ai")
         with p5: st.session_state["hover_duration"] = st.slider("Defect hover (s)", 2, 15, st.session_state["hover_duration"], key="hdur_ai")
 
+        # ── Waypoint preview & minimap ────────────────────────────────────────
         if st.button("👁️ Preview Path", key="btn_preview_path", use_container_width=True):
-            wps = generate_ai_path(selected_mode, st.session_state["survey_rows"],
-                                   st.session_state["survey_cols"], 80, st.session_state["survey_altitude"])
-            st.session_state["ai_path_waypoints"] = wps
+            wps_prev = generate_ai_path(selected_mode, st.session_state["survey_rows"],
+                               st.session_state["survey_cols"], 80, st.session_state["survey_altitude"])
+            st.session_state["ai_path_waypoints"] = wps_prev
             st.session_state["ai_path_current_wp"] = 0
-            st.success(f"✅ {len(wps)} waypoints generated for {selected_mode}")
+            est_time = len(wps_prev) * (st.session_state["hover_duration"] + 2)
+            st.success(f"✅ {len(wps_prev)} waypoints generated for **{selected_mode}** — Est. flight time: ~{est_time}s")
 
         wps = st.session_state.get("ai_path_waypoints", [])
         cur_wp = st.session_state.get("ai_path_current_wp", 0)
         if wps:
             st.markdown(ai_path_minimap_svg(wps, cur_wp, st.session_state["survey_rows"], st.session_state["survey_cols"]), unsafe_allow_html=True)
+            # Waypoint table (compact)
+            with st.expander(f"📋 Waypoint List ({len(wps)} points)", expanded=False):
+                wp_data = [{"#": i+1, "Label": w["label"], "X(cm)": w["x"], "Y(cm)": w["y"],
+                            "Alt(cm)": w["z"], "Yaw°": w.get("yaw",0), "Type": w["type"],
+                            "Status": "✅ Done" if i < cur_wp else ("🔵 Active" if i == cur_wp else "⬜ Pending")}
+                           for i, w in enumerate(wps)]
+                st.dataframe(pd.DataFrame(wp_data), use_container_width=True, height=200)
 
-        mc1, mc2 = st.columns(2)
+        # ── Mission launch / abort ────────────────────────────────────────────
+        st.markdown("---")
+        mc1, mc2, mc3 = st.columns(3)
         with mc1:
-            if st.button("🚀 START AI MISSION", key="btn_ai_start", use_container_width=True, type="primary",
+            if st.button("🚀 LAUNCH MISSION", key="btn_ai_start", use_container_width=True, type="primary",
                          disabled=not flying or mission):
+                if not wps:
+                    # Auto-generate path if not already previewed
+                    wps_auto = generate_ai_path(selected_mode, st.session_state["survey_rows"],
+                                          st.session_state["survey_cols"], 80, st.session_state["survey_altitude"])
+                    st.session_state["ai_path_waypoints"] = wps_auto
                 start_ai_mission(); st.rerun()
         with mc2:
-            if st.button("⬛ ABORT MISSION", key="btn_ai_abort", use_container_width=True, disabled=not mission):
+            if st.button("⏸️ PAUSE MISSION", key="btn_ai_pause", use_container_width=True,
+                         disabled=not mission):
                 st.session_state["mission_running"] = False
-                push_alert("Mission aborted.", "warn"); st.rerun()
+                push_alert("⏸️ Mission paused. Press Resume to continue.", "warn"); st.rerun()
+        with mc3:
+            if st.button("⬛ ABORT & LAND", key="btn_ai_abort", use_container_width=True,
+                         disabled=not (mission or flying)):
+                st.session_state["mission_running"] = False
+                push_alert("🛑 Mission aborted — landing…", "crit")
+                _do_land(); st.rerun()
 
-        if mission:
-            st.progress(cur_wp / max(len(wps), 1))
-            st.caption(f"Progress: {cur_wp}/{len(wps)} · Phase: {phase.upper()}")
+        # ── Progress ──────────────────────────────────────────────────────────
+        if mission and wps:
+            prog_val = cur_wp / max(len(wps), 1)
+            st.progress(prog_val)
+            st.caption(f"Progress: {cur_wp}/{len(wps)} waypoints · Phase: **{phase.upper()}** · Elapsed: {mission_elapsed()}")
+
+        # ── Custom waypoints editor ───────────────────────────────────────────
+        if selected_mode == "Custom Waypoints":
+            st.markdown('<div class="sec-hdr">📍 CUSTOM WAYPOINT EDITOR</div>', unsafe_allow_html=True)
+            cw1, cw2, cw3, cw4 = st.columns(4)
+            new_x = cw1.number_input("X (cm)", 0, 1000, 0, key="new_wp_x")
+            new_y = cw2.number_input("Y (cm)", 0, 1000, 0, key="new_wp_y")
+            new_z = cw3.number_input("Alt (cm)", 50, 400, st.session_state["survey_altitude"], key="new_wp_z")
+            new_yaw = cw4.number_input("Yaw °", 0, 360, 0, key="new_wp_yaw")
+            if st.button("➕ Add Waypoint", key="add_wp"):
+                existing = st.session_state.get("ai_path_waypoints", [])
+                existing.append({"x": new_x, "y": new_y, "z": new_z, "yaw": new_yaw,
+                                 "label": f"CW{len(existing)+1}", "type": "custom"})
+                st.session_state["ai_path_waypoints"] = existing
+                st.rerun()
+            if wps and st.button("🗑️ Clear All Waypoints", key="clear_wps"):
+                st.session_state["ai_path_waypoints"] = []
+                st.rerun()
 
     with auto_r:
-        st.markdown('<div class="sec-hdr">🛡️ SAFETY</div>', unsafe_allow_html=True)
+        st.markdown('<div class="sec-hdr">🛡️ SAFETY CONFIG</div>', unsafe_allow_html=True)
         st.session_state["ai_obstacle_detect"] = st.toggle("Obstacle detect (ToF)", value=st.session_state["ai_obstacle_detect"], key="obs_tog")
         st.session_state["ai_tof_safe_dist"] = st.slider("Min ToF dist (cm)", 20, 200, st.session_state["ai_tof_safe_dist"], key="tof_safe")
         st.session_state["ai_safety_min_alt"] = st.slider("Min altitude (cm)", 20, 150, st.session_state["ai_safety_min_alt"], key="min_alt")
         st.session_state["ai_safety_max_alt"] = st.slider("Max altitude (cm)", 100, 500, st.session_state["ai_safety_max_alt"], key="max_alt")
         st.session_state["min_battery_rtl"] = st.slider("RTL battery %", 5, 40, st.session_state["min_battery_rtl"], key="rtl_bat")
         st.session_state["auto_rtl"] = st.toggle("Auto-RTL on low battery", value=st.session_state["auto_rtl"], key="auto_rtl_tog")
+        st.session_state["geofence_active"] = st.toggle("Geofence (radius limit)", value=st.session_state.get("geofence_active", False), key="geo_tog")
+        if st.session_state.get("geofence_active"):
+            st.session_state["ai_geofence_radius"] = st.slider("Geofence radius (cm)", 100, 2000, st.session_state["ai_geofence_radius"], key="geo_rad")
 
         st.markdown('<div class="sec-hdr">📊 MISSION STATUS</div>', unsafe_allow_html=True)
+        safety_col = "#00ff88" if safety == "SAFE" else "#ffa502" if safety == "CAUTION" else "#ff4757"
         st.markdown(f"""
-<div style="background:#080e14;border:1px solid #0d4f6e;border-radius:6px;padding:12px;font-family:'Share Tech Mono',monospace;font-size:0.72rem;line-height:1.8">
+<div style="background:#080e14;border:1px solid #0d4f6e;border-radius:6px;padding:12px;font-family:'Share Tech Mono',monospace;font-size:0.72rem;line-height:2">
+  <div>Safety: <span style="color:{safety_col};font-weight:700">{safety}</span></div>
   <div>Phase: <span style="color:#00d4ff">{phase.upper()}</span></div>
   <div>Mode: <span style="color:#ffa502">{st.session_state['ai_path_mode']}</span></div>
   <div>WP: <span style="color:#00d4ff">{cur_wp}/{len(wps)}</span></div>
+  <div>Battery: <span style="color:{'#00ff88' if bat>50 else '#ffa502' if bat>20 else '#ff4757'}">{bat:.0f}%</span></div>
+  <div>Alt: <span style="color:#00d4ff">{tel.get('height',0)}cm</span> / Max: {st.session_state['ai_safety_max_alt']}cm</div>
+  <div>ToF: <span style="color:{'#00ff88' if tel.get('tof',0)>100 else '#ff4757'}">{tel.get('tof',0)}cm</span></div>
   <div>Missions: <span style="color:#00ff88">{stats['missions_completed']}</span></div>
   <div>Elapsed: {mission_elapsed()}</div>
 </div>
 """, unsafe_allow_html=True)
+
+        st.markdown('<div class="sec-hdr">⚡ QUICK ACTIONS</div>', unsafe_allow_html=True)
+        if st.button("🏠 Return to Home", key="btn_rth_auto", use_container_width=True, disabled=not flying):
+            st.session_state["ai_path_mode"] = "Return to Home"
+            st.session_state["mission_running"] = False
+            push_alert("🏠 RTH initiated…", "warn")
+            _do_land(); st.rerun()
+        if st.button("🔄 Resume Mission", key="btn_ai_resume", use_container_width=True,
+                     disabled=mission or not flying or not wps):
+            start_ai_mission(); st.rerun()
+        if st.button("📸 Capture Now", key="btn_snap_auto", use_container_width=True,
+                     disabled=not st.session_state.get("cam_active")):
+            capture_screenshot(); st.rerun()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -2588,6 +2686,16 @@ with tab_config:
         st.session_state["site_lat"] = lc.number_input("Latitude", value=st.session_state["site_lat"], format="%.6f", key="lat_cfg")
         st.session_state["site_lon"] = rc.number_input("Longitude", value=st.session_state["site_lon"], format="%.6f", key="lon_cfg")
 
+        st.markdown('<div class="sec-hdr">📡 EXTERNAL CAMERA STREAM</div>', unsafe_allow_html=True)
+        st.session_state["custom_stream_url"] = st.text_input(
+            "HTTP MJPEG / IP Camera URL",
+            value=st.session_state.get("custom_stream_url", ""),
+            placeholder="http://192.168.x.x:8080/video or http://drone-cam:8889/",
+            key="stream_cfg",
+            help="For fixed drone cameras, IP cameras, or any online MJPEG stream. Leave blank to use Tello SDK feed."
+        )
+        st.caption("Supported formats: HTTP MJPEG streams. For RTSP, use a VLC/FFmpeg proxy to convert to HTTP first.")
+
         st.markdown('<div class="sec-hdr">🗄️ DATABASE CONFIG</div>', unsafe_allow_html=True)
         st.info("MongoDB: default `mongodb://localhost:27017/`\nMySQL: default `root@localhost/crack_db`")
 
@@ -2780,7 +2888,7 @@ with tab_ana:
         if st.button("🗑️ Clear Chat", key="ana_clear", use_container_width=True, type="secondary"):
             st.session_state["ana_history"] = []; st.rerun()
         st.markdown("---")
-        st.caption("ANA is your AI co-pilot powered by Claude. She has real-time access to mission state, telemetry, database, YOLO model, and weather.")
+
 
     with ana_l:
         chat_history = st.session_state.get("ana_history", [])
@@ -2835,7 +2943,7 @@ st.markdown(
     '<hr style="border-color:#0d4f6e;margin-top:16px">'
     '<div style="text-align:center;color:#1a4a5a;font-family:\'Share Tech Mono\',monospace;'
     'font-size:0.62rem;padding:8px;letter-spacing:1px">'
-    'Building Contruction Inspection · Developed by Sandun Wijesinghe · Innovating the future of aerial technology ·Smarter skies, safer decisions.'
+    'UAV Navigation & Control Center · Building Construction Inspection · Developed by Sandun Wijesinghe · Innovating the future of aerial technology · Smarter skies, safer decisions.'
     '</div>',
     unsafe_allow_html=True,
 )
